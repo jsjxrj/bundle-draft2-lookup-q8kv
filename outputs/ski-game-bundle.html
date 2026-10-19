@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>夜间滑雪</title>
+<style>
+html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#05060e;touch-action:none;}
+canvas{display:block;width:100vw;height:100vh;}
+#hud{position:fixed;pointer-events:none;font-family:"Segoe UI",Arial,sans-serif;color:#e6eef7;font-size:16px;line-height:1.7;}
+#hud .box{background:rgba(5,8,16,.55);border:1px solid rgba(120,160,220,.35);border-radius:8px;padding:10px 14px;color:#e6eef7;}
+#hud .box .row{display:flex;justify-content:space-between;gap:18px;}
+#hud .box .row span{font-weight:700;}
+#hud .box .row b{font-weight:300;color:#8aa3c4;}
+#hud #scoreBox{position:absolute;left:16px;top:16px;min-width:210px;}
+#hud #bestBox{position:absolute;right:16px;top:16px;text-align:right;min-width:150px;}
+#hud #bestBox .row{justify-content:flex-end;}
+#hud #helpBox{position:absolute;left:16px;bottom:16px;color:#6b86a8;font-size:13px;letter-spacing:.5px;}
+#overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(4,6,14,.55);pointer-events:none;opacity:0;transition:opacity .35s ease;}
+#overlay.show{opacity:1;}
+#overlay .card{background:rgba(4,6,14,.72);border:1px solid rgba(120,160,220,.4);border-radius:12px;padding:28px 44px;text-align:center;color:#e6eef7;}
+#overlay h1{margin:0 0 8px;font-size:28px;letter-spacing:2px;}
+#overlay p{margin:6px 0;font-size:18px;color:#a9c1dd;}
+#overlay .hint{margin-top:14px;font-size:14px;color:#7d98bc;letter-spacing:1px;}
+</style>
+</head>
+<body>
+<div id="hud">
+  <div class="box" id="scoreBox">
+    <div class="row"><b>分数</b><span id="score">0</span></div>
+    <div class="row"><b>速度</b><span id="speed">0 km/h</span></div>
+    <div class="row"><b>距离</b><span id="dist">0 m</span></div>
+  </div>
+  <div class="box" id="bestBox">
+    <div class="row"><b>最高分</b><span id="best">0</span></div>
+  </div>
+  <div id="helpBox">← → 转向 · ↑ 加速 · ↓ 减速</div>
+</div>
+<div id="overlay">
+  <div class="card">
+    <h1 id="ovTitle">夜间滑雪</h1>
+    <p id="ovSub">穿过旗门得分，避开树木与岩石</p>
+    <p id="ovStats"></p>
+    <div class="hint" id="ovHint">按 空格 开始</div>
+  </div>
+</div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+/* ===================== 渲染器/相机/场景 ===================== */
+const renderer = new THREE.WebGLRenderer({antialias:true, alpha:false, powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth,innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const camera = new THREE.PerspectiveCamera(72, innerWidth/innerHeight, 0.1, 2000);
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x070b1a, 0.0085);
+scene.background = new THREE.Color(0x04060f);
+
+const dirLight = new THREE.DirectionalLight(0x8fa6c8, 1.1);
+dirLight.position.set(-18, 40, 40);
+dirLight.castShadow = true;
+dirLight.shadow.mapSize.set(1024,1024);
+dirLight.shadow.camera.near = 2;
+dirLight.shadow.camera.far = 120;
+dirLight.shadow.camera.left = -40; dirLight.shadow.camera.right = 40;
+dirLight.shadow.camera.top = 60; dirLight.shadow.camera.bottom = -60;
+dirLight.shadow.bias = -0.0008;
+dirLight.shadow.normalBias = 0.02;
+scene.add(dirLight);
+
+const moonLight = new THREE.DirectionalLight(0xb9d0ff, 0.5);
+moonLight.position.set(20, 60, -30);
+scene.add(moonLight);
+
+const ambient = new THREE.AmbientLight(0x223048, 0.55);
+scene.add(ambient);
+const hemi = new THREE.HemisphereLight(0x36507a, 0x0b0d16, 0.6);
+scene.add(hemi);
+
+/* ===================== 星空 ===================== */
+const starGeo = new THREE.BufferGeometry();
+const starCount = 1600;
+{
+  const pos = new Float32Array(starCount*3);
+  const size = new Float32Array(starCount);
+  for(let i=0;i<starCount;i++){
+    const r = 900 + Math.random()*1200;
+    const th = Math.random()*Math.PI*2;
+    const ph = Math.PI*0.5 - (Math.random()*0.8 + 0.1); // 上半部分
+    pos[i*3]   = r*Math.cos(ph)*Math.cos(th);
+    pos[i*3+1] = r*Math.sin(ph);
+    pos[i*3+2] = r*Math.cos(ph)*Math.sin(th);
+    size[i] = Math.random()*1.6 + 0.4;
+  }
+  starGeo.setAttribute('position', new THREE.BufferAttribute(pos,3));
+}
+const starMat = new THREE.PointsMaterial({color:0xdce8ff,size:2.2,sizeAttenuation:true,transparent:true,opacity:0.9,depthWrite:false});
+const stars = new THREE.Points(starGeo, starMat);
+scene.add(stars);
+
+/* 月亮 */
+const moonGeo = new THREE.SphereGeometry(42, 24, 24);
+const moonMat = new THREE.MeshBasicMaterial({color:0xe8f2ff});
+const moon = new THREE.Mesh(moonGeo, moonMat);
+moon.position.set(300, 260, -520);
+scene.add(moon);
+const moonGlow = new THREE.Mesh(new THREE.SphereGeometry(58,16,16), new THREE.MeshBasicMaterial({color:0x6d86c4, transparent:true, opacity:0.35}));
+moonGlow.position.copy(moon.position);
+scene.add(moonGlow);
+const moonGlow2 = new THREE.Mesh(new THREE.SphereGeometry(78,16,16), new THREE.MeshBasicMaterial({color:0x3d5a92, transparent:true, opacity:0.18}));
+moonGlow2.position.copy(moon.position);
+scene.add(moonGlow2);
+
+/* ===================== 雪地面/雪坡 ===================== */
+const snowMat = new THREE.MeshStandardMaterial({color:0xdde8f7, roughness:0.85, metalness:0.0});
+const snowGeo = new THREE.PlaneGeometry(140, 800);
+snowGeo.rotateX(-Math.PI/2);
+const snow = new THREE.Mesh(snowGeo, snowMat);
+snow.receiveShadow = true;
+scene.add(snow);
+snow.position.set(0,0,0);
+
+/* ===================== 雪山轮廓 ===================== */
+function addMountainProfile(){
+  const pts = [];
+  let x=-380;
+  while(x<=380){
+    let y = 140 + Math.sin(x*0.006+1.2)*40 + Math.sin(x*0.015+2.1)*22 + (Math.random()*0.3);
+    y = Math.max(y, 90);
+    pts.push(new THREE.Vector3(x, y, -900));
+    x += 30;
+  }
+  // 填充为带厚度面
+  const frontPts = pts.map(p=>p.clone());
+  const backPts = pts.map(p=>p.clone().add(new THREE.Vector3(0,0,-180)));
+  const shape = new THREE.Shape();
+  shape.moveTo(frontPts[0].x, frontPts[0].y);
+  for(const p of frontPts) shape.lineTo(p.x,p.y);
+  for(let i=backPts.length-1;i>=0;i--) shape.lineTo(backPts[i].x, backPts[i].y);
+  shape.closePath();
+  const mGeo = new THREE.ShapeGeometry(shape);
+  const mMat = new THREE.MeshBasicMaterial({color:0x0a1426, side:THREE.DoubleSide});
+  const m = new THREE.Mesh(mGeo, mMat);
+  m.position.set(0,0,0);
+  m.rotation.y = Math.PI/2;
+  scene.add(m);
+  // 第二层更远
+  const m2 = new THREE.Mesh(mGeo.clone(), new THREE.MeshBasicMaterial({color:0x070d1a, side:THREE.DoubleSide}));
+  m2.position.set(0,0,-260);
+  m2.rotation.y = Math.PI/2;
+  scene.add(m2);
+}
+addMountainProfile();
+
+/* ===================== 雪痕 ===================== */
+const trailPoints = [];
+const trailGeo = new THREE.BufferGeometry();
+trailGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(60*3),3));
+trailGeo.setDrawRange(0,0);
+const trailMat = new THREE.MeshBasicMaterial({color:0xffffff, transparent:true, opacity:0.9});
+const trail = new THREE.Mesh(trailGeo, trailMat);
+scene.add(trail);
+let trailIndex = 0;
+function addTrailPoint(p){
+  if(trailIndex >= 60) trailIndex = 0;
+  const i = trailIndex*3;
+  const arr = trailGeo.getAttribute('position').array;
+  arr[i] = p.x; arr[i+1] = p.y; arr[i+2] = p.z;
+  trailIndex++;
+  trailGeo.setDrawRange(0, trailIndex);
+  trailGeo.attributes.position.needsUpdate = true;
+}
+
+/* ===================== 雪粒飞溅粒子 ===================== */
+const snowFlakeGeo = new THREE.BufferGeometry();
+const flakeCount = 200;
+const flakePos = new Float32Array(flakeCount*3);
+const flakeVel = new Float32Array(flakeCount*3);
+const flakeAge = new Float32Array(flakeCount).fill(-1);
+const flakeGeoAttr = new THREE.BufferAttribute(flakePos,3);
+flakeGeoAttr.setUsage(THREE.DynamicDrawUsage);
+snowFlakeGeo.setAttribute('position', flakeGeoAttr);
+const flakeMat = new THREE.PointsMaterial({color:0xffffff, size:0.6, sizeAttenuation:true, transparent:true, opacity:1.0});
+const flakes = new THREE.Points(snowFlakeGeo, flakeMat);
+flakes.visible = false;
+scene.add(flakes);
+
+/* ===================== 路灯 ===================== */
+const lampGroup = new THREE.Group();
+function makeLamp(){
+  const g = new THREE.Group();
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.14,3.2,10), new THREE.MeshStandardMaterial({color:0x3a4556, roughness:0.7, metalness:0.5}));
+  pole.position.y = 1.6;
+  pole.castShadow = true;
+  g.add(pole);
+  const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.09,0.09,0.9,8), new THREE.MeshStandardMaterial({color:0x3a4556, roughness:0.7, metalness:0.5}));
+  arm.rotation.z = -Math.PI/4;
+  arm.position.set(0,3.0,0);
+  g.add(arm);
+  const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.18,12,12), new THREE.MeshBasicMaterial({color:0xfff2c4}));
+  bulb.position.set(0,3.45,0);
+  g.add(bulb);
+  const glow = new THREE.Mesh(new THREE.SphereGeometry(0.4,10,10), new THREE.MeshBasicMaterial({color:0xffd97a, transparent:true, opacity:0.5}));
+  glow.position.copy(bulb.position);
+  g.add(glow);
+  const light = new THREE.PointLight(0xffd08a, 2.8, 22, 2);
+  light.position.copy(bulb.position);
+  g.add(light);
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(3.2,10,16,1,true), new THREE.MeshBasicMaterial({color:0xffd08a, transparent:true, opacity:0.12, depthWrite:false}));
+  cone.position.set(0,1.0,0);
+  cone.rotation.x = Math.PI/2;
+  cone.scale.set(1,1,1);
+  // 指向地面
+  cone.lookAt(0,-5,0);
+  g.add(cone);
+  return g;
+}
+const lamps = [];
+function addLampRow(z, side){
+  const g = makeLamp();
+  g.position.set(side*4.6, 0, z);
+  g.rotation.y = side<0 ? Math.PI : 0;
+  lampGroup.add(g);
+  lamps.push(g);
+}
+
+/* 路灯灯光池（地面光斑） */
+const lightPools = [];
+function addLightPool(z, side){
+  const geo = new THREE.CircleGeometry(4.5, 16);
+  geo.rotateX(-Math.PI/2);
+  const mat = new THREE.MeshBasicMaterial({color:0xffd08a, transparent:true, opacity:0.18, depthWrite:false});
+  const m = new THREE.Mesh(geo,mat);
+  m.position.set(side*4.6, 0.02, z);
+  lampGroup.add(m);
+  lightPools.push(m);
+}
+
+/* ===================== 障碍物（树/石头） ===================== */
+function makeTree(){
+  const g = new THREE.Group();
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18,0.24,1.2,8), new THREE.MeshStandardMaterial({color:0x3b2a1c, roughness:0.9}));
+  trunk.position.y = 0.6;
+  trunk.castShadow = true;
+  g.add(trunk);
+  const c1 = new THREE.Mesh(new THREE.ConeGeometry(1.1,2.2,12), new THREE.MeshStandardMaterial({color:0x0f3d2a, roughness:0.9}));
+  c1.position.y = 1.7;
+  c1.castShadow = true;
+  g.add(c1);
+  const c2 = new THREE.Mesh(new THREE.ConeGeometry(0.9,1.8,12), new THREE.MeshStandardMaterial({color:0x114832, roughness:0.9}));
+  c2.position.y = 2.7;
+  c2.castShadow = true;
+  g.add(c2);
+  const c3 = new THREE.Mesh(new THREE.ConeGeometry(0.6,1.3,12), new THREE.MeshStandardMaterial({color:0x15583c, roughness:0.9}));
+  c3.position.y = 3.4;
+  c3.castShadow = true;
+  g.add(c3);
+  return g;
+}
+function makeStone(){
+  const g = new THREE.Group();
+  const m = new THREE.Mesh(new THREE.IcosahedronGeometry(0.7+Math.random()*0.4,2), new THREE.MeshStandardMaterial({color:0x8a93a0, roughness:0.9, flatShading:true}));
+  m.position.y = 0.45;
+  m.rotation.set(Math.random()*0.5, Math.random()*Math.PI*2, Math.random()*0.5);
+  m.castShadow = true;
+  g.add(m);
+  return g;
+}
+function makeFlagGate(left){
+  const g = new THREE.Group();
+  const post = new THREE.Mesh(new THREE.CylinderGeometry(0.09,0.09,2.4,8), new THREE.MeshBasicMaterial({color:0xff3344}));
+  post.position.y = 1.2;
+  g.add(post);
+  const flag = new THREE.Mesh(new THREE.PlaneGeometry(0.9,0.5,1,1), new THREE.MeshBasicMaterial({color:0x33aaff, side:THREE.DoubleSide}));
+  flag.position.set(left? -0.45:0.45, 2.2, 0);
+  flag.rotation.y = left? -Math.PI/2:Math.PI/2;
+  g.add(flag);
+  return g;
+}
+
+const obstacles = [];
+let gateIndex = 0;
+const nextGateZ = -60;
+let spawnZ = -300;
+const gateGap = 3.4;
+
+function spawnObstacles(){
+  while(spawnZ > camera.position.z - 60){
+    // 随机放置树/石头
+    const r = Math.random();
+    if(r < 0.55){
+      const z = Math.floor(spawnZ) + Math.random()*12;
+      const side = Math.random()<0.5? -1:1;
+      const x = side*(5.5+Math.random()*8);
+      const obj = r<0.4? makeTree():makeStone();
+      obj.position.set(x,0,z);
+      scene.add(obj);
+      obstacles.push({mesh:obj, pos:new THREE.Vector3(x,0,z), active:true});
+      spawnZ -= 12 + Math.random()*10;
+    }
+    // 旗门
+    if(spawnZ > camera.position.z + 15 && nextGateZ > camera.position.z + 20){
+      const gap = gateGap + Math.random()*0.8;
+      const off = (Math.random()-0.5)*1.5;
+      const left = makeFlagGate(true); left.position.set(-gap/2+off,0, nextGateZ);
+      const right = makeFlagGate(false); right.position.set(gap/2+off,0, nextGateZ);
+      scene.add(left); scene.add(right);
+      obstacles.push({mesh:left, pos:new THREE.Vector3(-gap/2+off,0,nextGateZ), active:true, gate:true, isLeft:true, gateZ:nextGateZ, gap:gap, off:off});
+      obstacles.push({mesh:right, pos:new THREE.Vector3(gap/2+off,0,nextGateZ), active:true, gate:true, isLeft:false, gateZ:nextGateZ, gap:gap, off:off});
+      nextGateZ += 35 + Math.random()*15;
+      spawnZ = nextGateZ - 10;
+    }
+  }
+}
+
+/* ===================== 玩家（滑雪者） ===================== */
+function makePlayer(){
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.28,0.5,8,10), new THREE.MeshStandardMaterial({color:0x246cff, roughness:0.6}));
+  body.position.y = 0.7;
+  body.castShadow = true;
+  g.add(body);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.22,14,14), new THREE.MeshStandardMaterial({color:0xf2e7d3, roughness:0.6}));
+  head.position.y = 1.25;
+  head.castShadow = true;
+  g.add(head);
+  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.25,14,14), new THREE.MeshStandardMaterial({color:0xff5544, roughness:0.5}));
+  helmet.position.y = 1.35;
+  g.add(helmet);
+  // 雪杖
+  const stickMat = new THREE.MeshStandardMaterial({color:0x333333, roughness:0.7, metalness:0.3});
+  const stickGeo = new THREE.CylinderGeometry(0.03,0.03,1.1,6);
+  const stickL = new THREE.Mesh(stickGeo, stickMat);
+  stickL.position.set(-0.45,0.5,0);
+  stickL.rotation.z = 0.3;
+  g.add(stickL);
+  const stickR = new THREE.Mesh(stickGeo, stickMat);
+  stickR.position.set(0.45,0.5,0);
+  stickR.rotation.z = -0.3;
+  g.add(stickR);
+  // 滑雪板
+  const boardMat = new THREE.MeshStandardMaterial({color:0xff8800, roughness:0.7});
+  const boardGeo = new THREE.BoxGeometry(0.3,0.04,1.3);
+  const boardL = new THREE.Mesh(boardGeo, boardMat);
+  boardL.position.set(-0.28,0.04,0);
+  boardL.rotation.y = 0.15;
+  g.add(boardL);
+  const boardR = new THREE.Mesh(boardGeo, boardMat);
+  boardR.position.set(0.28,0.04,0);
+  boardR.rotation.y = -0.15;
+  g.add(boardR);
+  const g2 = new THREE.Group();
+  g.add(g2);
+  return g;
+}
+const player = makePlayer();
+player.position.set(0,0.06,-40);
+scene.add(player);
+
+/* ===================== 雪痕粒子 ===================== */
+const trailTrailGeo = new THREE.BufferGeometry();
+trailTrailGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(120*3),3));
+const trailTrail = new THREE.Line(trailTrailGeo, new THREE.LineBasicMaterial({color:0xffffff, transparent:true, opacity:0.55}));
+scene.add(trailTrail);
+const trailTrailArr = trailTrailGeo.getAttribute('position').array;
+let ttIndex = 0;
+function addTrailTrailPoint(p){
+  if(ttIndex >= 120) ttIndex = 0;
+  const i = ttIndex*3;
+  trailTrailArr[i]=p.x; trailTrailArr[i+1]=p.y; trailTrailArr[i+2]=p.z;
+  ttIndex++;
+  trailTrailGeo.setDrawRange(0, ttIndex);
+  trailTrailGeo.attributes.position.needsUpdate = true;
+}
+const trailTrailFade = new THREE.BufferAttribute(new Float32Array(120),1);
+trailTrailGeo.setAttribute('color', trailTrailFade);
+trailTrail.material = new THREE.LineBasicMaterial({vertexColors:true, transparent:true, opacity:0.8});
+// 重置颜色
+for(let i=0;i<120;i++) trailTrailFade.array[i]=1;
+
+/* ===================== 雾/粒子氛围 ===================== */
+const fogParticles = new THREE.Points(
+  (()=>{
+    const n=120, pos=new Float32Array(n*3);
+    for(let i=0;i<n;i++){
+      pos[i*3]=(Math.random()-0.5)*80;
+      pos[i*3+1]=Math.random()*30+5;
+      pos[i*3+2]=(Math.random()*200)-100;
+    }
+    return new THREE.BufferGeometry().setAttribute('position',new THREE.BufferAttribute(pos,3));
+  })(),
+  new THREE.PointsMaterial({color:0x8ab0d4, size:2.5, sizeAttenuation:true, transparent:true, opacity:0.15, depthWrite:false})
+);
+scene.add(fogParticles);
+
+/* ===================== 游戏状态 ===================== */
+const state = {
+  running:false,
+  score:0,
+  best:0,
+  speed:0,
+  maxSpeed:0,
+  distance:0,
+  lean:0,
+  leanTarget:0,
+  leanVel:0,
+  camLagX:0,
+  camLagY:0,
+  camTilt:0,
+  camTiltTarget:0,
+  hit:false,
+  hitTime:0,
+  hitFly:0,
+  hitFlyTime:0,
+  lastGate:0,
+  missedGates:0,
+  spawnZ:-300,
+  nextGateZ:-60,
+  gateIndex:0
+};
+state.best = 0;
+
+const keys = {};
+addEventListener('keydown', e=>{ keys[e.code]=true; if(e.code==='Space'){ e.preventDefault(); handleSpace(); } });
+addEventListener('keyup', e=>{ keys[e.code]=false; });
+
+function handleSpace(){
+  if(!state.running){
+    state.running = true;
+    state.score = 0;
+    state.speed = 0;
+    state.distance = 0;
+    state.lean = 0; state.leanTarget = 0;
+    state.camLagX = 0; state.camLagY = 0;
+    state.camTilt = 0; state.camTiltTarget = 0;
+    state.hit = false; state.hitFly = 0;
+    state.gateIndex = 0;
+    state.spawnZ = -300; state.nextGateZ = -60;
+    overlay.classList.remove('show');
+    // 重置障碍物（简化：清除旧障碍）
+    obstacles.forEach(o=>{ scene.remove(o.mesh); });
+    obstacles.length = 0;
+    lamps.forEach(l=>scene.remove(l));
+    lightPools.forEach(l=>scene.remove(l));
+    lamps.length=0; lightPools.length=0;
+    lampGroup.clear();
+    // 重建路灯
+    for(let z=-50; z> -400; z-=18){
+      addLampRow(z, -1); addLampRow(z, 1);
+      addLightPool(z, -1); addLightPool(z, 1);
+    }
+    // 重置玩家
+    player.position.set(0,0.06,-40);
+    player.rotation.set(0,0,0);
+    player.visible = true;
+    // 重置雪痕
+    trailIndex=0; trailGeo.setDrawRange(0,0);
+    ttIndex=0; trailTrailGeo.setDrawRange(0,0);
+    // 重置粒子
+    for(let i=0;i<flakeCount;i++){ flakeAge[i]=-1; }
+    flakes.visible=false;
+    // 重置旗门
+    const gap = gateGap;
+    const left = makeFlagGate(true); left.position.set(-gap/2,0,-60);
+    const right = makeFlagGate(false); right.position.set(gap/2,0,-60);
+    scene.add(left); scene.add(right);
+    obstacles.push({mesh:left, pos:new THREE.Vector3(-gap/2,0,-60), active:true, gate:true, isLeft:true, gateZ:-60, gap:gap, off:0});
+    obstacles.push({mesh:right, pos:new THREE.Vector3(gap/2,0,-60), active:true, gate:true, isLeft:false, gateZ:-60, gap:gap, off:0});
+    state.nextGateZ = -60 - (35+Math.random()*15);
+    state.spawnZ = -300;
+    // 显示 HUD
+    hudShow();
+  } else {
+    // 重新开始（空格在运行中忽略）
+  }
+}
+
+function hudShow(){
+  document.getElementById('score').textContent = state.score;
+  document.getElementById('speed').textContent = Math.round(state.speed*3.6) + ' km/h';
+  document.getElementById('dist').textContent = Math.round(state.distance) + ' m';
+  document.getElementById('best').textContent = state.best;
+}
+
+function showGameOver(){
+  state.running = false;
+  state.best = Math.max(state.best, state.score);
+  const stats = `最终分数 ${state.score}<br>最高速度 ${Math.round(state.maxSpeed*3.6)} km/h<br>滑行距离 ${Math.round(state.distance)} m`;
+  document.getElementById('ovTitle').textContent = '游戏结束';
+  document.getElementById('ovSub').textContent = '撞到障碍物了';
+  document.getElementById('ovStats').innerHTML = stats;
+  document.getElementById('ovHint').textContent = '按 空格 重新开始';
+  overlay.classList.add('show');
+}
+
+/* 开始时的初始显示 */
+document.getElementById('ovTitle').textContent = '夜间滑雪';
+document.getElementById('ovSub').textContent = '穿过旗门得分，避开树木与岩石';
+document.getElementById('ovStats').innerHTML = '';
+document.getElementById('ovHint').textContent = '按 空格 开始';
+overlay.classList.add('show');
+
+/* ===================== Web Audio 风声 ===================== */
+let audioCtx = null;
+let windSource = null;
+let windGain = null;
+let windFilter = null;
+function initAudio(){
+  if(audioCtx) return;
+  audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+  // 白噪声
+  const bufSize = audioCtx.sampleRate*2;
+  const buf = audioCtx.createBuffer(1, bufSize, audioCtx.sampleRate);
+  const d = buf.getChannelData(0);
+  for(let i=0;i<bufSize;i++) d[i] = Math.random()*2-1;
+  windSource = audioCtx.createBufferSource();
+  windSource.buffer = buf;
+  windSource.loop = true;
+  windSource.playbackRate.value = 0.6;
+  windFilter = audioCtx.createBiquadFilter();
+  windFilter.type = 'lowpass';
+  windFilter.frequency.value = 400;
+  windFilter.Q.value = 1.2;
+  windGain = audioCtx.createGain();
+  windGain.gain.value = 0;
+  windSource.connect(windFilter).connect(windGain).connect(audioCtx.destination);
+  windSource.start();
+}
+function updateWind(speed){
+  if(!audioCtx) return;
+  const norm = Math.min(1, speed/40);
+  const targetGain = 0.05 + norm*0.35;
+  windGain.gain.setTargetAtTime(targetGain, audioCtx.currentTime, 0.1);
+  windFilter.frequency.setTargetAtTime(200 + norm*1800, audioCtx.currentTime, 0.1);
+  windSource.playbackRate.setTargetAtTime(0.4 + norm*0.9, audioCtx.currentTime, 0.1);
+}
+// 点击/按键时初始化音频
+addEventListener('keydown', ()=>{ if(!audioCtx) initAudio(); }, {once:true});
+addEventListener('pointerdown', ()=>{ if(!audioCtx) initAudio(); }, {once:true});
+
+/* ===================== 碰撞 ===================== */
+function checkCollisions(){
+  if(!state.running) return;
+  const p = player.position;
+  for(const o of obstacles){
+    if(!o.active) continue;
+    const dx = p.x - o.pos.x;
+    const dz = p.z - o.pos.z;
+    if(o.gate) continue; // 门不做碰撞
+    const dist = Math.hypot(dx,dz);
+    const radius = o.mesh === null ? 0.5 : (o.mesh.geometry instanceof THREE.ConeGeometry? 1.0 : 0.7);
+    if(dist < radius + 0.45){
+      hitPlayer(o);
+      return;
+    }
+  }
+}
+
+function hitPlayer(o){
+  if(state.hit) return;
+  state.hit = true;
+  state.hitTime = performance.now();
+  state.hitFly = 1;
+  state.hitFlyTime = 0;
+  // 翻转
+  player.rotation.x = Math.PI/2.5;
+  player.rotation.z = Math.random()*0.6;
+  player.position.y = 0.15;
+  // 停止
+  state.speed = 0;
+  setTimeout(()=>{
+    showGameOver();
+    player.rotation.x = 0;
+    player.rotation.z = 0;
+    player.visible = true;
+  }, 900);
+}
+
+/* 旗门判定 */
+function checkGates(){
+  if(!state.running) return;
+  const pz = player.position.z;
+  for(const o of obstacles){
+    if(!o.active || !o.gate) continue;
+    if(o.gateZ > -10 && o.gateZ < pz + 2 && !o.passed){
+      const inGate = Math.abs(player.position.x) < (o.gap/2) + 0.35;
+      o.passed = true;
+      if(inGate){
+        state.score += 100;
+      } else {
+        state.score -= 50;
+      }
+      o.active = false;
+      scene.remove(o.mesh);
+    }
+  }
+}
+
+/* ===================== 主循环 ===================== */
+let lastT = performance.now();
+function loop(t){
+  requestAnimationFrame(loop);
+  const dt = Math.min((t-lastT)/1000, 0.05);
+  lastT = t;
+
+  // 星空旋转
+  stars.rotation.y += 0.0002;
+
+  // 路灯跟随玩家
+  const pz = player.position.z;
+  for(const l of lamps){
+    l.position.z = l.position.z + 0; // 静态
+  }
+  // 路灯池光斑
+  for(const lp of lightPools){
+    lp.position.z = lp.position.z;
+  }
+
+  // 雾粒子漂移
+  fogParticles.position.z = (fogParticles.position.z + dt*2) % 200;
+
+  if(state.running && !state.hit){
+    // 控制
+    let accel = 0.0;
+    const maxS = 1.4 + state.distance*0.0008; // 逐渐加快
+    const baseSpeed = 0.4;
+    if(keys['ArrowUp']||keys['KeyW']) accel += 0.02;
+    if(keys['ArrowDown']||keys['KeyS']) accel -= 0.015;
+    state.speed += accel*dt*60;
+    state.speed = Math.max(0.15, Math.min(maxS*1.1, state.speed + dt*0.04));
+    // 自动加速
+    state.speed += dt*0.02;
+    state.speed = Math.min(state.speed, 3.5 + state.distance*0.0015);
+    state.maxSpeed = Math.max(state.maxSpeed, state.speed);
+
+    // 转向
+    let steer = 0;
+    if(keys['ArrowLeft']||keys['KeyA']) steer += 1;
+    if(keys['ArrowRight']||keys['KeyD']) steer -= 1;
+    const turnRate = 0.35 + state.speed*0.15;
+    player.rotation.y += steer*turnRate*dt*60*0.016;
+
+    // 倾斜
+    state.leanTarget = steer*0.35;
+    state.leanVel += (state.leanTarget - state.lean)*4*dt;
+    state.leanVel *= 0.9;
+    state.lean += state.leanVel*dt;
+    player.rotation.z = -state.lean;
+    player.rotation.x = 0;
+
+    // 移动
+    const dirX = Math.sin(player.rotation.y);
+    const dirZ = -Math.cos(player.rotation.y);
+    player.position.x += dirX*state.speed*dt*60*0.016;
+    player.position.z += dirZ*state.speed*dt*60*0.016;
+    state.distance += state.speed*dt*60*0.016;
+
+    // 雪痕
+    addTrailPoint(player.position);
+    addTrailTrailPoint(player.position);
+
+    // 雪粒
+    if(state.speed > 1.0){
+      const rate = (state.speed-1.0)*30*dt*60;
+      if(Math.random() < rate){
+        for(let i=0;i<3;i++){
+          const fl = findFreeFlake();
+          if(fl>=0){
+            flakePos[fl*3] = player.position.x + (Math.random()-0.5)*0.6;
+            flakePos[fl*3+1] = player.position.y + 0.1;
+            flakePos[fl*3+2] = player.position.z + (Math.random()-0.5)*0.6;
+            flakeVel[fl*3] = dirX*(Math.random()*0.5+0.3) + (Math.random()-0.5)*0.4;
+            flakeVel[fl*3+1] = Math.random()*0.4+0.2;
+            flakeVel[fl*3+2] = dirZ*(Math.random()*0.5+0.3) + (Math.random()-0.5)*0.4;
+            flakeAge[fl] = 0;
+          }
+        }
+      }
+      flakes.visible = true;
+    } else {
+      flakes.visible = false;
+    }
+
+    // 碰撞
+    checkCollisions();
+    checkGates();
+
+    // 生成新障碍物
+    spawnObstacles();
+
+    // 清理远处
+    const farZ = pz - 200;
+    for(let i=obstacles.length-1;i>=0;i--){
+      const o = obstacles[i];
+      if(o.pos.z < farZ){
+        scene.remove(o.mesh);
+        obstacles.splice(i,1);
+      }
+    }
+  } else if(state.hit){
+    // 摔倒动画
+    state.hitFlyTime += dt;
+    state.hitFly = 1 - state.hitFlyTime/1.0;
+    if(state.hitFly<0) state.hitFly=0;
+    player.position.y = 0.15 + Math.max(0, state.hitFly)*2.0;
+    player.rotation.x = (Math.PI/2.5)*(1-state.hitFly);
+    player.rotation.z = Math.random()*0.6*(1-state.hitFly);
+    state.speed = Math.max(0, state.speed*(1-dt*3));
+  }
+
+  // 更新雪粒
+  for(let i=0;i<flakeCount;i++){
+    if(flakeAge[i] >= 0){
+      flakeAge[i] += dt;
+      flakePos[i*3]   += flakeVel[i*3]*dt*60*0.016;
+      flakePos[i*3+1] += flakeVel[i*3+1]*dt*60*0.016 - dt*60*0.016*2;
+      flakePos[i*3+2] += flakeVel[i*3+2]*dt*60*0.016;
+      if(flakeAge[i] > 0.6){
+        flakeAge[i] = -1;
+        flakePos[i*3] = 1000;
+        flakePos[i*3+1] = 1000;
+        flakePos[i*3+2] = 1000;
+      }
+    }
+  }
+  if(flakes.visible) flakeGeoAttr.needsUpdate = true;
+
+  // 更新雪痕颜色衰减
+  const cArr = trailTrailFade.array;
+  for(let i=0;i<120;i++){
+    cArr[i] = 0.2 + 0.8*(ttIndex - i)/120;
+    if(i > ttIndex) cArr[i] = 0;
+  }
+  trailTrailFade.needsUpdate = true;
+
+  // 相机
+  const camDist = 4.5;
+  const camHeight = 2.0;
+  const camYaw = player.rotation.y;
+  const camX = player.position.x + Math.sin(camYaw)*camDist;
+  const camZ = player.position.z + Math.cos(camYaw)*camDist;
+  const camY = player.position.y + camHeight;
+  const camTarget = new THREE.Vector3(player.position.x, player.position.y+0.3, player.position.z);
+  // 平滑
+  camera.position.lerp(new THREE.Vector3(camX, camY, camZ), 0.08);
+  camera.lookAt(camTarget);
+  // 倾斜
+  state.camTiltTarget = -state.lean*0.5;
+  state.camTilt += (state.camTiltTarget - state.camTilt)*0.06;
+  camera.rotation.z = state.camTilt;
+
+  // 风声
+  updateWind(state.speed);
+
+  // HUD
+  if(state.running || state.hit){
+    hudShow();
+  }
+
+  renderer.render(scene, camera);
+}
+
+function findFreeFlake(){
+  for(let i=0;i<flakeCount;i++){
+    if(flakeAge[i] < 0) return i;
+  }
+  return -1;
+}
+
+/* ===================== 初始路灯 ===================== */
+for(let z=-50; z> -400; z-=18){
+  addLampRow(z, -1); addLampRow(z, 1);
+  addLightPool(z, -1); addLightPool(z, 1);
+}
+
+/* ===================== 初始旗门 ===================== */
+{
+  const gap = gateGap;
+  const left = makeFlagGate(true); left.position.set(-gap/2,0,-60);
+  const right = makeFlagGate(false); right.position.set(gap/2,0,-60);
+  scene.add(left); scene.add(right);
+  obstacles.push({mesh:left, pos:new THREE.Vector3(-gap/2,0,-60), active:true, gate:true, isLeft:true, gateZ:-60, gap:gap, off:0});
+  obstacles.push({mesh:right, pos:new THREE.Vector3(gap/2,0,-60), active:true, gate:true, isLeft:false, gateZ:-60, gap:gap, off:0});
+  state.nextGateZ = -60 - (35+Math.random()*15);
+}
+
+/* 初始 spawnZ 避免重复生成 */
+state.spawnZ = -300;
+state.nextGateZ = -60 - (35+Math.random()*15);
+
+/* ===================== 窗口缩放 ===================== */
+addEventListener('resize', ()=>{
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

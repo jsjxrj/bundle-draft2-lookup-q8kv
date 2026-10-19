@@ -1,0 +1,3 @@
+{"draft": 1, "wall_s": 178.9, "completion_tokens": 8555, "tps_wall": 47.81, "tps_server": 47.97, "finish": "stop", "complete_html": true, "accept_acc": 3888, "accept_gen": 4766, "accept_rate": 0.8158, "mean_accepted_len": 1.915}
+{"draft": 2, "wall_s": 197.8, "completion_tokens": 8569, "tps_wall": 43.32, "tps_server": 43.55, "finish": "stop", "complete_html": true, "accept_acc": 5226, "accept_gen": 6730, "accept_rate": 0.7765, "mean_accepted_len": 2.78}
+{"draft": 3, "error": "Remote end closed connection without response"}
